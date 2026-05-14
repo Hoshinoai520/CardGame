@@ -1,0 +1,4 @@
+spark_sprite_strip9_0.png
+Source: OpenGameArt, "Spark Effect"
+URL: https://opengameart.org/content/spark-effect
+License: CC0 1.0
