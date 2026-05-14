@@ -1727,7 +1727,9 @@ public sealed class CardBattleGame : MonoBehaviour
         intentDescText.text = intent.Description;
         debuffText.text = BuildDebuffText();
         turnText.text = playerTurn && !gameOver ? "我方行动" : "敌方行动";
-        statusBar.text = "第 " + round + " 回合  |  " + (playerTurn && !gameOver ? "我方行动" : "敌方行动");
+        statusBar.text = playerTurn && !gameOver
+            ? "第 " + round + " 回合 | 出战：我方角色 | 生命 " + playerHp + " | 护甲 " + playerBlock
+            : "第 " + round + " 回合 | 出战：敌方角色 | 生命 " + enemyHp + " | 护甲 " + enemyBlock;
         endTurnButton.interactable = playerTurn && !gameOver && !inputLocked;
 
         foreach (var view in cardViews)
