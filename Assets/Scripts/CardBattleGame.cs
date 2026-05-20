@@ -25,6 +25,10 @@ public sealed class CardBattleGame : MonoBehaviour
     private const int MaxEnemyHp = 60;
     private const int BaseEnergy = 3;
     private const int AudioSampleRate = 44100;
+    private const float LeverPlayerFrame = 1f;
+    private const float LeverEnemyFrame = 120f;
+    private const float LeverReturnFrame = 236f;
+    private const float LeverSwitchDuration = 0.42f;
 
     private readonly List<string> logs = new List<string>();
     private readonly List<CardView> cardViews = new List<CardView>();
@@ -41,6 +45,9 @@ public sealed class CardBattleGame : MonoBehaviour
     private Font font;
     private RectTransform table;
     private RectTransform handRoot;
+    private RectTransform scrollSheet;
+    private RectTransform scrollLeftRoll;
+    private RectTransform scrollRightRoll;
     private RectTransform fieldDivider;
     private RectTransform combatFlash;
     private RectTransform attackLine;
@@ -54,8 +61,10 @@ public sealed class CardBattleGame : MonoBehaviour
     private Text energyText;
     private Text playerHpText;
     private Text playerBlockText;
+    private Text playerCardTitleText;
     private Text playerCardHpText;
     private Text playerCardBlockText;
+    private Text enemyCardTitleText;
     private Text enemyHpText;
     private Text enemyBlockText;
     private Image playerHpFill;
@@ -69,11 +78,20 @@ public sealed class CardBattleGame : MonoBehaviour
     private Text resultTitleText;
     private Text resultBodyText;
     private Button endTurnButton;
+    private RawImage endTurnLeverImage;
+    private RenderTexture endTurnLeverTexture;
+    private GameObject endTurnLeverRig;
+    private GameObject endTurnLeverModel;
+    private Transform endTurnLeverModelPivot;
+    private Camera endTurnLeverCamera;
+    private Animation endTurnLeverAnimation;
+    private AnimationClip endTurnLeverClip;
     private GameObject resultOverlay;
     private RectTransform enemyActiveCard;
     private RectTransform enemyAttackCard;
     private RectTransform activeHeroCard;
     private CardView draggingCard;
+    private CardView hoveredCard;
     private Vector2 dragOffset;
     private Coroutine tableShakeRoutine;
 
@@ -90,6 +108,7 @@ public sealed class CardBattleGame : MonoBehaviour
     private bool gameOver;
     private bool inputLocked;
     private bool isDraggingCard;
+    private bool scrollOpen;
     private bool initialized;
     private string bootstrapError;
 
@@ -139,12 +158,23 @@ public sealed class CardBattleGame : MonoBehaviour
     private void ClearRuntimeVisuals()
     {
         var oldCanvas = GameObject.Find("Card Battle Canvas");
-        if (oldCanvas == null)
+        if (oldCanvas != null)
         {
-            return;
+            Destroy(oldCanvas);
         }
 
-        Destroy(oldCanvas);
+        var oldLeverRig = GameObject.Find("End Turn Lever Render Rig");
+        if (oldLeverRig != null)
+        {
+            Destroy(oldLeverRig);
+        }
+
+        if (endTurnLeverTexture != null)
+        {
+            endTurnLeverTexture.Release();
+            Destroy(endTurnLeverTexture);
+            endTurnLeverTexture = null;
+        }
     }
 
     private void BuildData()
@@ -312,98 +342,324 @@ public sealed class CardBattleGame : MonoBehaviour
         var infoPanel = Zone("选择查看敌方其他卡位的状态栏", 60, 32, 245, 122);
         Label(infoPanel, "点击敌方卡位时显示状态", 18, -70, 208, 28, 16, TextAnchor.MiddleCenter, Muted());
 
-        var actionPile = Zone(string.Empty, 108, 205, 165, 235);
-        Label(actionPile, "我方\n行动牌", 0, -56, 165, 110, 34, TextAnchor.MiddleCenter, ColorText());
-        DrawSketchStackEdge(actionPile);
+        var actionPile = CreateStackZone(108, 205, 165, 245, 10, 10);
+        Label(actionPile, "行动牌", 0, -18, 165, 28, 20, TextAnchor.MiddleCenter, ColorText());
 
-        var powerPile = Zone(string.Empty, 108, 520, 165, 230);
-        Label(powerPile, "我方能\n力牌", 0, -56, 165, 110, 30, TextAnchor.MiddleCenter, ColorText());
-        DrawSketchStackEdge(powerPile);
+        var powerPile = CreateStackZone(108, 520, 165, 230, 10, 10);
+        Label(powerPile, "能力牌", 0, -18, 165, 28, 20, TextAnchor.MiddleCenter, ColorText());
 
-        var costArea = Zone(string.Empty, -10, 836, 350, 120);
-        Label(table, "费用区", 340, -850, 120, 34, 24, TextAnchor.MiddleLeft, ColorText());
+        var costArea = Zone(string.Empty, -12, 836, 360, 122);
         energyText = Label(costArea, "费用 3", 26, -22, 128, 30, 24, TextAnchor.MiddleLeft, ColorText());
         Button(costArea, "重开", 174, -22, 72, 34, () => ResetGame(), true);
 
         var stateRail = Zone(string.Empty, 510, 34, 42, 218);
-        var stateLabel = Label(table, "状态栏", 468, -120, 96, 34, 24, TextAnchor.MiddleCenter, ColorText());
-        stateLabel.rectTransform.localEulerAngles = new Vector3(0, 0, 90f);
+        DrawRailSegments(stateRail, 1);
 
         enemyActiveCard = CreateHeroCard(table, "敌方出战角色", 590, 36, 0, false);
 
-        var topEffects = Zone("额外效果区", 1122, 14, 350, 166);
+        var topEffects = Zone(string.Empty, 1122, 14, 350, 166);
         enemyAttackCard = topEffects;
-        Label(topEffects, "敌方意图", 20, -54, 88, 22, 18, TextAnchor.MiddleLeft, ColorText());
-        var intentBox = CreatePanel(topEffects, "Intent Icon", 110, -48, 42, 42, new Color32(248, 248, 248, 255));
+        var intentBox = CreatePanel(topEffects, "Intent Icon", 26, -32, 42, 42, new Color32(248, 248, 248, 255));
         AddOutline(intentBox.gameObject, ColorText(), new Vector2(1, -1));
         intentIconText = Label(intentBox, "攻", 0, 0, 42, 42, 22, TextAnchor.MiddleCenter, ColorText());
-        intentNameText = Label(topEffects, "突刺", 164, -46, 150, 24, 18, TextAnchor.MiddleLeft, ColorText());
-        intentDescText = Label(topEffects, "下回合造成 8 点伤害", 20, -94, 300, 52, 14, TextAnchor.UpperLeft, Muted());
-        enemyActionText = Label(topEffects, "等待我方结束回合", 20, -132, 300, 22, 13, TextAnchor.MiddleCenter, Muted());
+        intentNameText = Label(topEffects, "突刺", 86, -30, 210, 24, 18, TextAnchor.MiddleLeft, ColorText());
+        intentDescText = Label(topEffects, "下回合造成 8 点伤害", 26, -78, 294, 52, 14, TextAnchor.UpperLeft, Muted());
+        enemyActionText = Label(topEffects, "等待我方结束回合", 26, -126, 294, 22, 13, TextAnchor.MiddleCenter, Muted());
 
         fieldDivider = CreateImage(table, "Field Divider", new Color32(18, 18, 18, 255));
-        SetTopLeft(fieldDivider, 0, 312, 1045, 3);
-        var enemyField = Label(table, "敌方场地", 798, -218, 170, 44, 30, TextAnchor.MiddleCenter, ColorText());
-        enemyField.rectTransform.localEulerAngles = new Vector3(0, 0, -10f);
-        var playerField = Label(table, "我方场地", 520, -385, 170, 44, 30, TextAnchor.MiddleCenter, ColorText());
-        playerField.rectTransform.localEulerAngles = new Vector3(0, 0, 4f);
+        SetTopLeft(fieldDivider, 0, 312, 1500, 3);
+        fieldDivider.SetAsFirstSibling();
 
-        var enemyHandA = CreatePanel(table, "敌方手牌数量", 1060, 258, 44, 54, new Color32(232, 232, 232, 255));
+        var enemyHandA = CreatePanel(table, "Enemy Hand Counter A", 1060, 258, 44, 54, new Color32(252, 252, 250, 255));
         AddOutline(enemyHandA.gameObject, ColorText(), new Vector2(1, -1));
-        var enemyHandB = CreatePanel(table, "敌方手牌数量", 1120, 252, 68, 124, new Color32(236, 236, 236, 255));
-        AddOutline(enemyHandB.gameObject, ColorText(), new Vector2(1, -1));
-        Label(table, "敌方手牌数量", 956, -204, 142, 26, 18, TextAnchor.MiddleCenter, ColorText());
 
-        var enemyCostLabel = Label(table, "敌方费用", 1218, -196, 174, 36, 30, TextAnchor.MiddleCenter, ColorText());
-        enemyCostLabel.rectTransform.localEulerAngles = new Vector3(0, 0, -6f);
-        var enemyCost = Zone(string.Empty, 1226, 248, 224, 44);
-        Label(enemyCost, "费用槽", 0, -10, 224, 24, 16, TextAnchor.MiddleCenter, Muted());
-
-        var lever = Zone(string.Empty, 1132, 296, 72, 122);
-        var leverSlot = CreateImage(lever, "Lever Slot", new Color32(236, 236, 236, 255));
-        SetTopLeft(leverSlot, 18, 0, 36, 122);
-        AddOutline(leverSlot.gameObject, ColorText(), new Vector2(1, -1));
-        endTurnButton = Button(table, "结束", 1118, -374, 102, 44, () => EndTurn());
-        Label(table, "推拉拉杆用于结束回合", 1220, -350, 270, 30, 24, TextAnchor.MiddleLeft, ColorText());
+        Zone(string.Empty, 1226, 248, 224, 44);
+        BuildEndTurnLever();
 
         var handRail = Zone(string.Empty, 1004, 476, 42, 196);
-        var handLabel = Label(table, "手牌区", 930, -520, 80, 28, 18, TextAnchor.MiddleCenter, ColorText());
-        handLabel.rectTransform.localEulerAngles = new Vector3(0, 0, 90f);
-        Label(table, "（手牌区）\n可以向左展开\n用以查看手牌", 904, -456, 112, 118, 18, TextAnchor.MiddleCenter, ColorText());
+        DrawRailSegments(handRail, 2);
 
-        var playerEffects = Zone("额外效果区", 1124, 470, 350, 288);
-        debuffText = Label(playerEffects, "暂无负面状态", 28, -70, 290, 58, 18, TextAnchor.UpperLeft, ColorText());
-        Label(playerEffects, "负面效果与战斗记录显示在此区", 28, -134, 290, 28, 14, TextAnchor.MiddleLeft, Muted());
-        logText = Label(playerEffects, string.Empty, 28, -172, 292, 92, 13, TextAnchor.UpperLeft, Muted());
+        var playerEffects = Zone(string.Empty, 1124, 470, 350, 288);
+        debuffText = Label(playerEffects, "暂无负面状态", 28, -34, 290, 58, 18, TextAnchor.UpperLeft, ColorText());
+        logText = Label(playerEffects, string.Empty, 28, -106, 292, 146, 13, TextAnchor.UpperLeft, Muted());
 
-        BuildBattleSlots();
         BuildPlayerCharacter();
         BuildHand();
 
-        var hpBar = Zone(string.Empty, 620, 474, 116, 34);
-        playerHpFill = CreateStatBar(hpBar, 8, -12, 100, 10, new Color32(236, 72, 60, 255));
-        var hpLabel = Label(hpBar, "血条", 0, -8, 116, 22, 20, TextAnchor.MiddleCenter, ColorText());
-        hpLabel.rectTransform.localEulerAngles = new Vector3(0, 0, -4f);
-
         var statusPanel = Zone(string.Empty, 458, 808, 456, 44);
         turnText = Label(statusPanel, "我方行动", 14, -8, 96, 28, 16, TextAnchor.MiddleCenter, ColorText());
-        statusBar = Label(statusPanel, "状态栏（仅显示出战角色 / 鼠标指针所在角色）", 110, -6, 336, 30, 17, TextAnchor.MiddleCenter, ColorText());
+        statusBar = Label(statusPanel, string.Empty, 110, -6, 336, 30, 17, TextAnchor.MiddleCenter, ColorText());
     }
 
     private void BuildPlayerCharacter()
     {
-        var leftBench = CreateHeroCard(table, "站场角色", 430, 590, 18f, false);
-        var leftAttach = CreatePanel(table, "Buff Tag", 430, 530, 88, 34, new Color32(232, 232, 232, 255));
-        AddOutline(leftAttach.gameObject, ColorText(), new Vector2(1, -1));
+        var leftBench = CreateBenchCard(table, 430, 590, 0f);
         leftBench.SetAsFirstSibling();
 
         activeHeroCard = CreateHeroCard(table, "我方角色", 612, 530, 0, true);
 
-        var rightBench = CreateHeroCard(table, "站场角色", 790, 590, -18f, false);
-        var rightAttach = CreatePanel(table, "Buff Tag", 830, 530, 88, 34, new Color32(232, 232, 232, 255));
-        AddOutline(rightAttach.gameObject, ColorText(), new Vector2(1, -1));
+        var rightBench = CreateBenchCard(table, 798, 590, 0f);
         rightBench.SetAsFirstSibling();
-        Label(table, "站场角色选择", 920, -742, 220, 34, 26, TextAnchor.MiddleCenter, ColorText()).rectTransform.localEulerAngles = new Vector3(0, 0, -6f);
+    }
+
+    private void BuildEndTurnLever()
+    {
+        var lever = CreateEmpty(table, "End Turn Lever");
+        SetTopLeft(lever, 1110, 248, 112, 150);
+
+        var viewObject = new GameObject("Lever Model View", typeof(RectTransform), typeof(CanvasRenderer), typeof(RawImage));
+        viewObject.transform.SetParent(lever, false);
+        var view = viewObject.GetComponent<RectTransform>();
+        SetTopLeft(view, 0, 0, 112, 150);
+
+        endTurnLeverTexture = new RenderTexture(192, 256, 16, RenderTextureFormat.ARGB32)
+        {
+            name = "End Turn Lever Render Texture",
+            antiAliasing = 4
+        };
+
+        endTurnLeverImage = viewObject.GetComponent<RawImage>();
+        endTurnLeverImage.texture = endTurnLeverTexture;
+        endTurnLeverImage.color = Color.white;
+
+        BuildEndTurnLeverRig();
+
+        endTurnButton = viewObject.AddComponent<Button>();
+        endTurnButton.targetGraphic = endTurnLeverImage;
+        var colors = endTurnButton.colors;
+        colors.normalColor = Color.white;
+        colors.highlightedColor = Color.white;
+        colors.pressedColor = Color.white;
+        colors.selectedColor = Color.white;
+        colors.disabledColor = Color.white;
+        colors.colorMultiplier = 1f;
+        endTurnButton.colors = colors;
+        endTurnButton.onClick.AddListener(() => EndTurn());
+    }
+
+    private void BuildEndTurnLeverRig()
+    {
+        if (endTurnLeverTexture == null)
+        {
+            return;
+        }
+
+        var prefab = Resources.Load<GameObject>("CardBattle/Models/on_off_lever");
+        if (prefab == null)
+        {
+            Debug.LogError("Cannot load CardBattle/Models/on_off_lever. The lever model must be under Assets/Resources/CardBattle/Models.");
+            return;
+        }
+
+        endTurnLeverRig = new GameObject("End Turn Lever Render Rig");
+        endTurnLeverRig.transform.position = new Vector3(200f, -200f, 200f);
+
+        endTurnLeverModelPivot = new GameObject("Lever Model Pivot").transform;
+        endTurnLeverModelPivot.SetParent(endTurnLeverRig.transform, false);
+
+        endTurnLeverModel = Instantiate(prefab, endTurnLeverModelPivot);
+        endTurnLeverModel.name = "On Off Lever Model";
+        endTurnLeverModel.transform.localPosition = Vector3.zero;
+        endTurnLeverModel.transform.localRotation = Quaternion.identity;
+        endTurnLeverModel.transform.localScale = Vector3.one;
+
+        ApplyEndTurnLeverMaterials(endTurnLeverModel);
+        FitEndTurnLeverModel(endTurnLeverModel.transform);
+        SetupEndTurnLeverAnimation();
+
+        var keyLightObject = new GameObject("Lever Key Light");
+        keyLightObject.transform.SetParent(endTurnLeverRig.transform, false);
+        keyLightObject.transform.localEulerAngles = new Vector3(0f, 0f, 0f);
+        var keyLight = keyLightObject.AddComponent<Light>();
+        keyLight.type = LightType.Directional;
+        keyLight.intensity = 1.6f;
+        keyLight.color = new Color(1f, 0.96f, 0.9f, 1f);
+
+        var fillLightObject = new GameObject("Lever Fill Light");
+        fillLightObject.transform.SetParent(endTurnLeverRig.transform, false);
+        fillLightObject.transform.localEulerAngles = new Vector3(0f, 180f, 0f);
+        var fillLight = fillLightObject.AddComponent<Light>();
+        fillLight.type = LightType.Directional;
+        fillLight.intensity = 0.35f;
+        fillLight.color = new Color(0.6f, 0.74f, 1f, 1f);
+
+        var cameraObject = new GameObject("Lever Camera");
+        cameraObject.transform.SetParent(endTurnLeverRig.transform, false);
+        cameraObject.transform.localPosition = new Vector3(0f, 3.6f, 0f);
+        cameraObject.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+        endTurnLeverCamera = cameraObject.AddComponent<Camera>();
+        endTurnLeverCamera.clearFlags = CameraClearFlags.SolidColor;
+        endTurnLeverCamera.backgroundColor = new Color(0f, 0f, 0f, 0f);
+        endTurnLeverCamera.orthographic = true;
+        endTurnLeverCamera.orthographicSize = 1.18f;
+        endTurnLeverCamera.nearClipPlane = 0.01f;
+        endTurnLeverCamera.farClipPlane = 20f;
+        endTurnLeverCamera.targetTexture = endTurnLeverTexture;
+        endTurnLeverCamera.Render();
+    }
+
+    private void FitEndTurnLeverModel(Transform model)
+    {
+        model.localEulerAngles = new Vector3(0f, 90f, 0f);
+
+        var bounds = GetRenderBounds(model.gameObject);
+        if (bounds.size.sqrMagnitude <= 0.0001f)
+        {
+            return;
+        }
+
+        CenterLeverModel(model, bounds);
+        bounds = GetRenderBounds(model.gameObject);
+
+        var maxDimension = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+        var scale = 1.68f / Mathf.Max(0.001f, maxDimension);
+        model.localScale *= scale;
+
+        bounds = GetRenderBounds(model.gameObject);
+        CenterLeverModel(model, bounds);
+    }
+
+    private void SetupEndTurnLeverAnimation()
+    {
+        if (endTurnLeverModel == null)
+        {
+            return;
+        }
+
+        endTurnLeverClip = FindEndTurnLeverClip();
+        if (endTurnLeverClip == null)
+        {
+            Debug.LogWarning("No animation clip found in CardBattle/Models/on_off_lever.");
+            return;
+        }
+
+        endTurnLeverClip.legacy = true;
+        endTurnLeverAnimation = endTurnLeverModel.GetComponent<Animation>();
+        if (endTurnLeverAnimation == null)
+        {
+            endTurnLeverAnimation = endTurnLeverModel.AddComponent<Animation>();
+        }
+
+        endTurnLeverAnimation.playAutomatically = false;
+        endTurnLeverAnimation.AddClip(endTurnLeverClip, endTurnLeverClip.name);
+        endTurnLeverAnimation.clip = endTurnLeverClip;
+        SampleEndTurnLeverAnimation(false);
+    }
+
+    private AnimationClip FindEndTurnLeverClip()
+    {
+        var clips = Resources.LoadAll<AnimationClip>("CardBattle/Models/on_off_lever");
+        AnimationClip fallback = null;
+        foreach (var clip in clips)
+        {
+            if (clip == null || clip.name.IndexOf("__preview__", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                continue;
+            }
+
+            if (fallback == null)
+            {
+                fallback = clip;
+            }
+
+            var name = clip.name.ToLowerInvariant();
+            if (name.Contains("take") || name.Contains("lever") || name.Contains("action"))
+            {
+                return clip;
+            }
+        }
+
+        return fallback;
+    }
+
+    private void CenterLeverModel(Transform model, Bounds bounds)
+    {
+        if (model.parent == null)
+        {
+            return;
+        }
+
+        var localCenter = model.parent.InverseTransformPoint(bounds.center);
+        model.localPosition -= localCenter;
+    }
+
+    private Bounds GetRenderBounds(GameObject root)
+    {
+        var renderers = root.GetComponentsInChildren<Renderer>();
+        var hasBounds = false;
+        var bounds = new Bounds(root.transform.position, Vector3.zero);
+        foreach (var renderer in renderers)
+        {
+            if (renderer == null)
+            {
+                continue;
+            }
+
+            if (!hasBounds)
+            {
+                bounds = renderer.bounds;
+                hasBounds = true;
+            }
+            else
+            {
+                bounds.Encapsulate(renderer.bounds);
+            }
+        }
+
+        return bounds;
+    }
+
+    private void ApplyEndTurnLeverMaterials(GameObject root)
+    {
+        var dark = CreateLeverMaterial("Lever Dark Metal", new Color32(16, 16, 16, 255), 0.78f, 0.58f);
+        var rubber = CreateLeverMaterial("Lever Rubber", new Color32(3, 3, 3, 255), 0.2f, 0.42f);
+        var steel = CreateLeverMaterial("Lever Polished Steel", new Color32(210, 210, 206, 255), 0.92f, 0.72f);
+
+        foreach (var renderer in root.GetComponentsInChildren<Renderer>())
+        {
+            var name = renderer.name.ToLowerInvariant();
+            if (name.Contains("stem") || name.Contains("pin") || name.Contains("hub") || name.Contains("cap"))
+            {
+                renderer.material = steel;
+            }
+            else if (name.Contains("grip") || name.Contains("rubber"))
+            {
+                renderer.material = rubber;
+            }
+            else
+            {
+                renderer.material = dark;
+            }
+        }
+    }
+
+    private Material CreateLeverMaterial(string name, Color color, float metallic, float smoothness)
+    {
+        var shader = Shader.Find("Standard") ?? Shader.Find("Diffuse");
+        var material = new Material(shader)
+        {
+            name = name,
+            color = color
+        };
+
+        if (material.HasProperty("_Metallic"))
+        {
+            material.SetFloat("_Metallic", metallic);
+        }
+        if (material.HasProperty("_Glossiness"))
+        {
+            material.SetFloat("_Glossiness", smoothness);
+        }
+
+        return material;
+    }
+
+    private RectTransform CreateBenchCard(RectTransform parent, float x, float y, float rotation)
+    {
+        var card = CreatePanel(parent, "Sketch Bench Character", x, y, 124, 154, new Color32(252, 252, 250, 255));
+        card.localEulerAngles = new Vector3(0, 0, rotation);
+        AddOutline(card.gameObject, ColorText(), new Vector2(2, -2));
+        return card;
     }
 
     private RectTransform CreateHeroCard(RectTransform parent, string title, float x, float y, float rotation, bool active)
@@ -412,12 +668,13 @@ public sealed class CardBattleGame : MonoBehaviour
         card.localEulerAngles = new Vector3(0, 0, rotation);
         AddOutline(card.gameObject, ColorText(), new Vector2(2, -2));
         DrawHeroArt(card, 18, -18, 114, 104);
-        Label(card, title, 12, -132, 126, 24, 18, TextAnchor.MiddleCenter, ColorText());
+        var titleLabel = Label(card, title, 12, -132, 126, 24, 18, TextAnchor.MiddleCenter, ColorText());
         var hp = Label(card, "生命 50", 16, -160, 56, 20, 12, TextAnchor.MiddleCenter, Red());
         var block = Label(card, "护甲 0", 82, -160, 56, 20, 12, TextAnchor.MiddleCenter, Blue());
         var hpFill = CreateStatBar(card, 18, -190, 114, 8, new Color32(236, 92, 72, 255));
         if (active)
         {
+            playerCardTitleText = titleLabel;
             playerCardHpText = hp;
             playerCardBlockText = block;
             playerHpText = hp;
@@ -429,6 +686,7 @@ public sealed class CardBattleGame : MonoBehaviour
         }
         else if (title.IndexOf("敌方", StringComparison.OrdinalIgnoreCase) >= 0)
         {
+            enemyCardTitleText = titleLabel;
             enemyHpText = hp;
             enemyBlockText = block;
             enemyHpFill = hpFill;
@@ -439,23 +697,172 @@ public sealed class CardBattleGame : MonoBehaviour
 
     private void BuildHand()
     {
-        handRoot = CreateEmpty(table, "Hand");
-        SetTopLeft(handRoot, 382, 626, 632, 220);
-        Label(handRoot, "手牌", 270, -174, 96, 24, 18, TextAnchor.MiddleCenter, ColorText());
+        scrollSheet = CreatePanel(table, "Bamboo Scroll Sheet", 390, 618, 660, 176, new Color32(252, 252, 250, 255));
+        AddOutline(scrollSheet.gameObject, ColorText(), new Vector2(2, -2));
+        scrollLeftRoll = CreatePanel(table, "Bamboo Scroll Left Roll", 366, 600, 32, 204, new Color32(252, 252, 250, 255));
+        AddOutline(scrollLeftRoll.gameObject, ColorText(), new Vector2(2, -2));
+        scrollRightRoll = CreatePanel(table, "Bamboo Scroll Right Roll", 1042, 600, 32, 204, new Color32(252, 252, 250, 255));
+        AddOutline(scrollRightRoll.gameObject, ColorText(), new Vector2(2, -2));
+        SetBambooScrollVisual(false, 0f);
 
-        var offsets = new[] { -260f, -130f, 0f, 130f, 260f };
-        var rotations = new[] { -8f, -4f, 0f, 4f, 8f };
+        handRoot = CreateEmpty(table, "Hand");
+        SetTopLeft(handRoot, 392, 630, 646, 154);
+
+        var offsets = new[] { -232f, -116f, 0f, 116f, 232f };
         for (var i = 0; i < cards.Length; i++)
         {
             var card = cards[i];
-            var button = CreateCardButton(handRoot, card, offsets[i], rotations[i]);
-            cardViews.Add(new CardView(card, button.Button, button.Note, button.Root, button.Root.anchoredPosition));
+            var button = CreateCardButton(handRoot, card, offsets[i], 0f);
+            cardViews.Add(new CardView(card, button.Button, button.Note, button.Root, button.Root.anchoredPosition, button.Title, button.Cost, button.Type, button.Body));
+        }
+    }
+
+    private void SetBambooScrollVisual(bool open, float progress)
+    {
+        progress = Mathf.Clamp01(progress);
+        var visible = open || progress > 0.001f;
+        if (scrollSheet != null)
+        {
+            scrollSheet.gameObject.SetActive(visible);
+            var width = Mathf.Lerp(44f, 660f, progress);
+            SetTopLeft(scrollSheet, 390 + (660f - width) * 0.5f, 618, width, 176);
+        }
+        if (scrollLeftRoll != null)
+        {
+            scrollLeftRoll.gameObject.SetActive(visible);
+            SetTopLeft(scrollLeftRoll, Mathf.Lerp(704f, 366f, progress), 600, 32, 204);
+        }
+        if (scrollRightRoll != null)
+        {
+            scrollRightRoll.gameObject.SetActive(visible);
+            SetTopLeft(scrollRightRoll, Mathf.Lerp(704f, 1042f, progress), 600, 32, 204);
+        }
+    }
+
+    private void ToggleBambooScroll()
+    {
+        if (inputLocked || gameOver || !playerTurn)
+        {
+            return;
+        }
+
+        StartCoroutine(scrollOpen ? CloseBambooScroll() : OpenBambooScroll());
+    }
+
+    private IEnumerator OpenBambooScroll()
+    {
+        inputLocked = true;
+        RaiseHandLayer();
+        for (var i = 0; i < cardViews.Count; i++)
+        {
+            var view = cardViews[i];
+            if (discardedCards.Contains(view.Card.Id))
+            {
+                continue;
+            }
+
+            view.Root.gameObject.SetActive(true);
+            view.Root.anchoredPosition = BambooScrollPositionInHand();
+            view.Root.localScale = Vector3.one * 0.18f;
+            view.Root.localEulerAngles = Vector3.zero;
+            EnsureCanvasGroup(view.Root).alpha = 0f;
+        }
+
+        for (var t = 0f; t < 0.28f; t += Time.unscaledDeltaTime)
+        {
+            var p = EaseOut(t / 0.28f);
+            SetBambooScrollVisual(true, p);
+            for (var i = 0; i < cardViews.Count; i++)
+            {
+                var view = cardViews[i];
+                if (discardedCards.Contains(view.Card.Id))
+                {
+                    continue;
+                }
+
+                var group = EnsureCanvasGroup(view.Root);
+                view.Root.anchoredPosition = Vector2.Lerp(BambooScrollPositionInHand(), view.HomePosition, p);
+                view.Root.localScale = Vector3.Lerp(Vector3.one * 0.18f, Vector3.one, p);
+                view.Root.localEulerAngles = Vector3.zero;
+                group.alpha = p;
+            }
+            yield return null;
+        }
+
+        SetBambooScrollVisual(true, 1f);
+        for (var i = 0; i < cardViews.Count; i++)
+        {
+            var view = cardViews[i];
+            if (discardedCards.Contains(view.Card.Id))
+            {
+                continue;
+            }
+
+            view.Root.anchoredPosition = view.HomePosition;
+            view.Root.localScale = Vector3.one;
+            view.Root.localEulerAngles = Vector3.zero;
+            EnsureCanvasGroup(view.Root).alpha = 1f;
+        }
+
+        scrollOpen = true;
+        inputLocked = false;
+        Render();
+    }
+
+    private IEnumerator CloseBambooScroll()
+    {
+        inputLocked = true;
+        for (var t = 0f; t < 0.22f; t += Time.unscaledDeltaTime)
+        {
+            var p = EaseOut(t / 0.22f);
+            var close = 1f - p;
+            SetBambooScrollVisual(true, close);
+            for (var i = 0; i < cardViews.Count; i++)
+            {
+                var view = cardViews[i];
+                if (!view.Root.gameObject.activeSelf)
+                {
+                    continue;
+                }
+
+                var group = EnsureCanvasGroup(view.Root);
+                view.Root.anchoredPosition = Vector2.Lerp(view.HomePosition, BambooScrollPositionInHand(), p);
+                view.Root.localScale = Vector3.Lerp(Vector3.one, Vector3.one * 0.18f, p);
+                group.alpha = close;
+            }
+            yield return null;
+        }
+
+        CloseBambooScrollImmediate();
+        inputLocked = false;
+        Render();
+    }
+
+    private void CloseBambooScrollImmediate()
+    {
+        scrollOpen = false;
+        hoveredCard = null;
+        SetBambooScrollVisual(false, 0f);
+        if (endTurnButton != null)
+        {
+            endTurnButton.interactable = playerTurn && !gameOver && !inputLocked;
+        }
+        foreach (var view in cardViews)
+        {
+            view.Root.anchoredPosition = BambooScrollPositionInHand();
+            view.Root.localScale = Vector3.one;
+            view.Root.localEulerAngles = Vector3.zero;
+            EnsureCanvasGroup(view.Root).alpha = 0f;
+            if (!isDraggingCard || draggingCard != view)
+            {
+                view.Root.gameObject.SetActive(false);
+            }
         }
     }
 
     private BuiltCard CreateCardButton(RectTransform parent, CardData card, float xOffset, float rotation)
     {
-        var root = CreatePanel(parent, card.Name, 316 + xOffset - 56, 0, 112, 160, new Color32(252, 252, 250, 255));
+        var root = CreatePanel(parent, card.Name, 323 + xOffset - 46, 0, 92, 132, new Color32(252, 252, 250, 255));
         root.localEulerAngles = new Vector3(0, 0, rotation);
         AddOutline(root.gameObject, ColorText(), new Vector2(2, -2));
         root.gameObject.AddComponent<RectMask2D>();
@@ -464,36 +871,42 @@ public sealed class CardBattleGame : MonoBehaviour
         button.targetGraphic = root.GetComponent<Image>();
         root.gameObject.AddComponent<CanvasGroup>();
 
-        Label(root, card.Name, 10, -8, 66, 22, 14, TextAnchor.MiddleLeft, ColorText());
-        var cost = CreatePanel(root, "Cost", 86, -8, 20, 20, new Color32(242, 242, 242, 255));
+        var titleText = Label(root, card.Name, 7, -6, 54, 18, 12, TextAnchor.MiddleLeft, ColorText());
+        var cost = CreatePanel(root, "Cost", 70, -6, 16, 16, new Color32(252, 252, 250, 255));
         AddOutline(cost.gameObject, ColorText(), new Vector2(1, -1));
-        Label(cost, card.Cost.ToString(), 0, 0, 20, 20, 13, TextAnchor.MiddleCenter, ColorText());
-        var dot = CreatePanel(root, "Element Dot", 10, -38, 9, 9, card.Tint);
-        dot.GetComponent<Image>().raycastTarget = false;
-        Label(root, card.Type, 24, -32, 78, 22, 10, TextAnchor.MiddleLeft, Muted());
-        var artBox = CreatePanel(root, "Card Art Placeholder", 14, -62, 84, 34, new Color32(232, 232, 232, 255));
-        AddOutline(artBox.gameObject, ColorText(), new Vector2(1, -1));
-        Label(root, card.Text, 10, -104, 92, 42, 10, TextAnchor.UpperLeft, ColorText());
-        var note = Label(root, string.Empty, 10, -142, 92, 16, 10, TextAnchor.MiddleLeft, Red());
+        var costText = Label(cost, card.Cost.ToString(), 0, 0, 16, 16, 11, TextAnchor.MiddleCenter, ColorText());
+        var separator = CreateImage(root, "Card Separator", ColorText());
+        SetTopLeft(separator, 7, 30, 78, 1);
+        var typeText = Label(root, card.Type, 7, -34, 78, 15, 8, TextAnchor.MiddleLeft, Muted());
+        typeText.horizontalOverflow = HorizontalWrapMode.Wrap;
+        var textLine = CreateImage(root, "Card Text Separator", ColorText());
+        SetTopLeft(textLine, 7, 76, 78, 1);
+        var bodyText = Label(root, card.Text, 7, -84, 78, 38, 8, TextAnchor.UpperLeft, ColorText());
+        var note = Label(root, string.Empty, 7, -118, 78, 12, 8, TextAnchor.MiddleLeft, Red());
         var dissolve = CreateImage(root, "Card Dissolve", new Color32(255, 220, 130, 0));
-        SetTopLeft(dissolve, 0, 0, 112, 160);
+        SetTopLeft(dissolve, 0, 0, 92, 132);
         var dissolveImage = dissolve.GetComponent<Image>();
         dissolveImage.sprite = CreateDissolveSprite(card.Tint);
         dissolveImage.type = Image.Type.Simple;
         dissolveImage.preserveAspect = false;
         dissolveImage.raycastTarget = false;
         dissolve.gameObject.SetActive(false);
-        return new BuiltCard(button, note, root);
+        ApplyCardTextQuality(titleText, 12, true);
+        ApplyCardTextQuality(costText, 11, true);
+        ApplyCardTextQuality(typeText, 8, false);
+        ApplyCardTextQuality(bodyText, 8, false);
+        ApplyCardTextQuality(note, 8, false);
+        return new BuiltCard(button, note, root, titleText, costText, typeText, bodyText);
     }
 
     private void BuildBattleLog()
     {
-        if (UseReferenceSketchLayout() && logText != null)
+        if (logText != null)
         {
             return;
         }
 
-        var logPanel = Zone("第 03 回合", 1164, 692, 322, 184);
+        var logPanel = Zone(string.Empty, 1164, 692, 322, 184);
         logText = Label(logPanel, string.Empty, 24, -48, 274, 104, 12, TextAnchor.UpperLeft, ColorText());
     }
 
@@ -651,64 +1064,47 @@ public sealed class CardBattleGame : MonoBehaviour
     {
     }
 
-    private void BuildBattleSlots()
+    private RectTransform CreateStackZone(float x, float y, float width, float height, float offsetX, float offsetY)
     {
-        CreateCardSlot(350, 230, false);
-        CreateCardSlot(470, 230, false);
-        CreateCardSlot(832, 230, false);
-        CreateCardSlot(952, 230, false);
-        CreateCardSlot(350, 398, true);
-        CreateCardSlot(470, 398, true);
-        CreateCardSlot(832, 398, true);
-        CreateCardSlot(952, 398, true);
-    }
-
-    private void CreateCardSlot(float x, float y, bool playerSide)
-    {
-        var slot = CreatePanel(table, "Battle Slot", x, y, 86, 100, new Color32(248, 248, 246, 180));
-        AddOutline(slot.gameObject, ColorText(), new Vector2(2, -2));
-        slot.localEulerAngles = Vector3.zero;
-        Label(slot, "◇", 0, -30, 86, 34, 26, TextAnchor.MiddleCenter, Muted());
-    }
-
-    private void DrawDeckStack(RectTransform parent)
-    {
-        var width = Mathf.Max(44f, Mathf.Min(88f, parent.sizeDelta.x - 36f));
-        var height = Mathf.Max(58f, Mathf.Min(76f, parent.sizeDelta.y - 96f));
-        var startX = (parent.sizeDelta.x - width) * 0.5f - 6f;
-        for (var i = 0; i < 3; i++)
-        {
-            var stack = CreatePanel(parent, "Deck Card", startX + i * 6, -48 - i * 7, width, height, new Color32(250, 250, 248, 255));
-            AddOutline(stack.gameObject, ColorText(), new Vector2(1, -1));
-            stack.localEulerAngles = Vector3.zero;
-        }
-    }
-
-    private void DrawSketchStackEdge(RectTransform parent)
-    {
-        var backA = CreateImage(parent, "Stack Offset A", new Color32(250, 250, 248, 255));
-        SetTopLeft(backA, 12, 14, parent.sizeDelta.x - 18, parent.sizeDelta.y - 18);
-        AddOutline(backA.gameObject, ColorText(), new Vector2(2, -2));
-        backA.SetAsFirstSibling();
-
-        var backB = CreateImage(parent, "Stack Offset B", new Color32(250, 250, 248, 255));
-        SetTopLeft(backB, 20, 24, parent.sizeDelta.x - 18, parent.sizeDelta.y - 18);
+        var backB = CreatePanel(table, "Sketch Stack Back B", x + offsetX * 1.7f, y + offsetY * 1.7f, width, height, new Color32(252, 252, 250, 255));
         AddOutline(backB.gameObject, ColorText(), new Vector2(2, -2));
-        backB.SetAsFirstSibling();
+        var backA = CreatePanel(table, "Sketch Stack Back A", x + offsetX, y + offsetY, width, height, new Color32(252, 252, 250, 255));
+        AddOutline(backA.gameObject, ColorText(), new Vector2(2, -2));
+        return Zone(string.Empty, x, y, width, height);
+    }
+
+    private void DrawRailSegments(RectTransform parent, int segments)
+    {
+        if (segments <= 0)
+        {
+            return;
+        }
+
+        for (var i = 1; i <= segments; i++)
+        {
+            var y = parent.sizeDelta.y * i / (segments + 1);
+            var line = CreateImage(parent, "Sketch Rail Segment", ColorText());
+            SetTopLeft(line, 0, y, parent.sizeDelta.x, 1);
+        }
     }
 
     private void DrawHeroArt(RectTransform parent, float x, float y, float width, float height)
     {
-        var art = CreatePanel(parent, "Hero Art", x, y, width, height, new Color32(238, 238, 238, 255));
+        var art = CreatePanel(parent, "Hero Art", x, y, width, height, new Color32(252, 252, 250, 255));
         AddOutline(art.gameObject, ColorText(), new Vector2(2, -2));
-        Label(art, "人", 0, -28, width, 48, 28, TextAnchor.MiddleCenter, Muted());
-    }
-
-    private void DrawEnemyArt(RectTransform parent, float x, float y, float width, float height)
-    {
-        var art = CreatePanel(parent, "Enemy Art", x, y, width, height, new Color32(238, 238, 238, 255));
-        AddOutline(art.gameObject, ColorText(), new Vector2(2, -2));
-        Label(art, "敌", 0, -28, width, 48, 28, TextAnchor.MiddleCenter, Muted());
+        var head = CreatePanel(art, "Sketch Head", width * 0.5f - 9f, -20, 18, 18, new Color32(252, 252, 250, 255));
+        AddOutline(head.gameObject, ColorText(), new Vector2(1, -1));
+        var body = CreateImage(art, "Sketch Body", ColorText());
+        SetTopLeft(body, width * 0.5f - 1f, 46, 2, 36);
+        var arm = CreateImage(art, "Sketch Arm", ColorText());
+        SetTopLeft(arm, width * 0.5f - 26f, 58, 52, 2);
+        arm.localEulerAngles = new Vector3(0, 0, -14f);
+        var legA = CreateImage(art, "Sketch Leg A", ColorText());
+        SetTopLeft(legA, width * 0.5f - 14f, 80, 2, 24);
+        legA.localEulerAngles = new Vector3(0, 0, 18f);
+        var legB = CreateImage(art, "Sketch Leg B", ColorText());
+        SetTopLeft(legB, width * 0.5f + 12f, 80, 2, 24);
+        legB.localEulerAngles = new Vector3(0, 0, -18f);
     }
 
     private RectTransform Zone(string title, float x, float y, float width, float height)
@@ -843,10 +1239,6 @@ public sealed class CardBattleGame : MonoBehaviour
         if (ContainsName(name, "Deck Card"))
         {
             return "cardback";
-        }
-        if (ContainsName(name, "Battle Slot"))
-        {
-            return "slot";
         }
         if (ContainsName(name, "Cost") || ContainsName(name, "Intent Icon") || ContainsName(name, "Icon"))
         {
@@ -1451,12 +1843,12 @@ public sealed class CardBattleGame : MonoBehaviour
 
     private bool CanPlay(CardData card)
     {
-        return playerTurn && !gameOver && !inputLocked && energy >= card.Cost && !discardedCards.Contains(card.Id) && !(card.Once && usedOnce.Contains(card.Id));
+        return playerTurn && scrollOpen && !gameOver && !inputLocked && energy >= card.Cost && !discardedCards.Contains(card.Id) && !(card.Once && usedOnce.Contains(card.Id));
     }
 
     private void PlayCard(CardData card)
     {
-        if (!CanPlay(card))
+        if (card == null)
         {
             return;
         }
@@ -1507,7 +1899,9 @@ public sealed class CardBattleGame : MonoBehaviour
     {
         inputLocked = true;
         playerTurn = false;
+        CloseBambooScrollImmediate();
         Render();
+        yield return MoveEndTurnLeverToEnemyTurn();
 
         enemyBlock = 0;
         var intent = intents[intentIndex];
@@ -1528,11 +1922,100 @@ public sealed class CardBattleGame : MonoBehaviour
             discardedCards.Clear();
             Log("第 " + round + " 回合开始，费用重置为 " + BaseEnergy + "，我方护甲清零。");
             Render();
+            yield return MoveEndTurnLeverToPlayerTurn();
             yield return DrawHandFromDeck();
         }
 
         inputLocked = false;
         Render();
+    }
+
+    private IEnumerator MoveEndTurnLeverToEnemyTurn()
+    {
+        yield return PlayEndTurnLeverModelAnimation(true);
+        SampleEndTurnLeverAnimation(true);
+    }
+
+    private IEnumerator MoveEndTurnLeverToPlayerTurn()
+    {
+        yield return PlayEndTurnLeverModelAnimation(false);
+        SampleEndTurnLeverAnimation(false);
+    }
+
+    private IEnumerator PlayEndTurnLeverModelAnimation(bool toEnemy)
+    {
+        if (endTurnLeverAnimation == null || endTurnLeverClip == null)
+        {
+            yield break;
+        }
+
+        var state = endTurnLeverAnimation[endTurnLeverClip.name];
+        if (state == null)
+        {
+            yield break;
+        }
+
+        var fromTime = toEnemy ? LeverFrameToClipTime(state, LeverPlayerFrame) : LeverFrameToClipTime(state, LeverEnemyFrame);
+        var toTime = toEnemy ? LeverFrameToClipTime(state, LeverEnemyFrame) : LeverFrameToClipTime(state, LeverReturnFrame);
+        var playTime = LeverSwitchDuration;
+        state.enabled = true;
+        state.weight = 1f;
+        state.wrapMode = WrapMode.ClampForever;
+        state.time = fromTime;
+        state.speed = (toTime - fromTime) / playTime;
+        endTurnLeverAnimation.Play(endTurnLeverClip.name);
+
+        for (var t = 0f; t < playTime; t += Time.unscaledDeltaTime)
+        {
+            if (endTurnLeverCamera != null)
+            {
+                endTurnLeverCamera.Render();
+            }
+            yield return null;
+        }
+
+        state.speed = 0f;
+        state.time = toTime;
+        endTurnLeverAnimation.Sample();
+        endTurnLeverAnimation.Stop();
+        state.enabled = true;
+        endTurnLeverAnimation.Sample();
+
+        if (endTurnLeverCamera != null)
+        {
+            endTurnLeverCamera.Render();
+        }
+    }
+
+    private void SampleEndTurnLeverAnimation(bool toEnemy)
+    {
+        if (endTurnLeverAnimation == null || endTurnLeverClip == null)
+        {
+            return;
+        }
+
+        var state = endTurnLeverAnimation[endTurnLeverClip.name];
+        if (state == null)
+        {
+            return;
+        }
+
+        state.enabled = true;
+        state.weight = 1f;
+        state.wrapMode = WrapMode.ClampForever;
+        state.speed = 0f;
+        state.time = LeverFrameToClipTime(state, toEnemy ? LeverEnemyFrame : LeverPlayerFrame);
+        endTurnLeverAnimation.Sample();
+        if (endTurnLeverCamera != null)
+        {
+            endTurnLeverCamera.Render();
+        }
+    }
+
+    private float LeverFrameToClipTime(AnimationState state, float frame)
+    {
+        var normalizedFrame = Mathf.InverseLerp(LeverPlayerFrame, LeverReturnFrame, frame);
+        return Mathf.Clamp01(normalizedFrame) * state.length;
     }
 
     private void CheckEnd()
@@ -1577,7 +2060,9 @@ public sealed class CardBattleGame : MonoBehaviour
         StopAllCoroutines();
         draggingCard = null;
         isDraggingCard = false;
+        scrollOpen = false;
         ResetHandToDrawPile();
+        SampleEndTurnLeverAnimation(false);
         resultOverlay.SetActive(false);
         enemyActionText.text = "等待我方结束回合";
         Log("牌局开始：敌方意图已公开。");
@@ -1610,7 +2095,7 @@ public sealed class CardBattleGame : MonoBehaviour
         }
         if (fieldDivider != null)
         {
-            SetTopLeft(fieldDivider, 0, playerTurn && !gameOver ? 312 : 520, 1045, 3);
+            SetTopLeft(fieldDivider, 0, playerTurn && !gameOver ? 312 : 520, 1500, 3);
         }
         intentIconText.text = intent.Icon;
         intentIconText.transform.parent.GetComponent<Image>().color = intent.Tint;
@@ -1621,8 +2106,6 @@ public sealed class CardBattleGame : MonoBehaviour
         statusBar.text = playerTurn && !gameOver
             ? "第 " + round + " 回合 | 出战：我方角色 | 生命 " + playerHp + " | 护甲 " + playerBlock
             : "第 " + round + " 回合 | 出战：敌方角色 | 生命 " + enemyHp + " | 护甲 " + enemyBlock;
-        endTurnButton.interactable = playerTurn && !gameOver && !inputLocked;
-
         foreach (var view in cardViews)
         {
             var canPlay = CanPlay(view.Card);
@@ -2070,11 +2553,12 @@ public sealed class CardBattleGame : MonoBehaviour
     private IEnumerator DrawHandFromDeck()
     {
         inputLocked = true;
+        CloseBambooScrollImmediate();
         foreach (var view in cardViews)
         {
             view.Root.gameObject.SetActive(true);
             view.Root.anchoredPosition = DrawPilePositionInHand();
-            view.Root.localScale = Vector3.one;
+            view.Root.localScale = Vector3.one * 0.42f;
             view.Root.localEulerAngles = Vector3.zero;
             EnsureCanvasGroup(view.Root).alpha = 0f;
         }
@@ -2097,21 +2581,22 @@ public sealed class CardBattleGame : MonoBehaviour
 
         var group = EnsureCanvasGroup(view.Root);
         var start = DrawPilePositionInHand();
-        var end = view.HomePosition;
+        var end = BambooScrollPositionInHand();
         view.Root.SetAsLastSibling();
         PlaySound("draw", 0.52f, 0.98f + delay * 1.4f);
         for (var t = 0f; t < 0.34f; t += Time.unscaledDeltaTime)
         {
             var p = EaseOut(t / 0.34f);
-            view.Root.anchoredPosition = Vector2.Lerp(start, end, p) + new Vector2(0, Mathf.Sin(p * Mathf.PI) * -32f);
-            view.Root.localScale = Vector3.one;
-            group.alpha = p;
+            view.Root.anchoredPosition = Vector2.Lerp(start, end, p) + new Vector2(0, Mathf.Sin(p * Mathf.PI) * -30f);
+            view.Root.localScale = Vector3.Lerp(Vector3.one * 0.42f, Vector3.one * 0.16f, p);
+            group.alpha = Mathf.Sin(p * Mathf.PI);
             yield return null;
         }
 
         view.Root.anchoredPosition = end;
         view.Root.localScale = Vector3.one;
-        group.alpha = 1f;
+        group.alpha = 0f;
+        view.Root.gameObject.SetActive(false);
     }
 
     private bool IsAttackCard(CardData card)
@@ -2367,11 +2852,12 @@ public sealed class CardBattleGame : MonoBehaviour
 
     private void ResetHandToDrawPile()
     {
+        CloseBambooScrollImmediate();
         foreach (var view in cardViews)
         {
             view.Root.gameObject.SetActive(true);
             view.Root.anchoredPosition = DrawPilePositionInHand();
-            view.Root.localScale = Vector3.one;
+            view.Root.localScale = Vector3.one * 0.42f;
             view.Root.localEulerAngles = Vector3.zero;
             EnsureCanvasGroup(view.Root).alpha = 0f;
             ResetDissolveVisuals(view.Root);
@@ -2705,6 +3191,18 @@ public sealed class CardBattleGame : MonoBehaviour
 
     private void RaiseHandLayer()
     {
+        if (scrollSheet != null)
+        {
+            scrollSheet.SetAsLastSibling();
+        }
+        if (scrollLeftRoll != null)
+        {
+            scrollLeftRoll.SetAsLastSibling();
+        }
+        if (scrollRightRoll != null)
+        {
+            scrollRightRoll.SetAsLastSibling();
+        }
         if (handRoot != null)
         {
             handRoot.SetAsLastSibling();
@@ -2773,7 +3271,18 @@ public sealed class CardBattleGame : MonoBehaviour
 
     private Vector2 DrawPilePositionInHand()
     {
-        return new Vector2(-230f, -16f);
+        return TableTopLeftToHand(150f, 245f);
+    }
+
+    private Vector2 BambooScrollPositionInHand()
+    {
+        return TableTopLeftToHand(968f, 486f);
+    }
+
+    private Vector2 TableTopLeftToHand(float x, float y)
+    {
+        var handTopLeft = HandTopLeftInTable();
+        return new Vector2(x - handTopLeft.x, -(y - handTopLeft.y));
     }
 
     private CanvasGroup EnsureCanvasGroup(RectTransform rect)
@@ -2861,6 +3370,111 @@ public sealed class CardBattleGame : MonoBehaviour
         return value * value * value;
     }
 
+    private void UpdateCardHover(Event current)
+    {
+        if (current == null || cards == null || table == null || handRoot == null)
+        {
+            return;
+        }
+
+        if (!scrollOpen || inputLocked || gameOver || !playerTurn || isDraggingCard)
+        {
+            ClearCardHover();
+            return;
+        }
+
+        CardView nextHover = null;
+        for (var i = cardViews.Count - 1; i >= 0; i--)
+        {
+            var view = cardViews[i];
+            if (view.Root == null || !view.Root.gameObject.activeSelf || discardedCards.Contains(view.Card.Id))
+            {
+                continue;
+            }
+
+            if (CardScreenRect(view).Contains(current.mousePosition))
+            {
+                nextHover = view;
+                break;
+            }
+        }
+
+        if (hoveredCard != nextHover)
+        {
+            ClearCardHover();
+            hoveredCard = nextHover;
+            if (hoveredCard != null)
+            {
+                RaiseHandLayer();
+                hoveredCard.Root.SetAsLastSibling();
+            }
+        }
+
+        if (hoveredCard != null)
+        {
+            ApplyCardHoverVisual(hoveredCard, true);
+        }
+
+        foreach (var view in cardViews)
+        {
+            if (view != hoveredCard && view.Root.gameObject.activeSelf && !discardedCards.Contains(view.Card.Id))
+            {
+                ApplyCardHoverVisual(view, false);
+            }
+        }
+    }
+
+    private void ClearCardHover()
+    {
+        if (hoveredCard == null || isDraggingCard)
+        {
+            hoveredCard = null;
+            return;
+        }
+
+        ApplyCardHoverVisual(hoveredCard, false);
+        hoveredCard = null;
+    }
+
+    private void ApplyCardHoverVisual(CardView view, bool active)
+    {
+        var targetPosition = active ? HoverCardPosition(view) : view.HomePosition;
+        var targetScale = active ? 1.5f : 1f;
+        view.Root.anchoredPosition = Vector2.Lerp(view.Root.anchoredPosition, targetPosition, 0.24f);
+        view.Root.localScale = Vector3.Lerp(view.Root.localScale, Vector3.one * targetScale, 0.24f);
+        view.Root.localEulerAngles = Vector3.zero;
+        UpdateCardTextForHover(view, active);
+    }
+
+    private void UpdateCardTextForHover(CardView view, bool active)
+    {
+        ApplyCardTextQuality(view.TitleText, active ? 14 : 12, true);
+        ApplyCardTextQuality(view.CostText, active ? 13 : 11, true);
+        ApplyCardTextQuality(view.TypeText, active ? 10 : 8, false);
+        ApplyCardTextQuality(view.BodyText, active ? 10 : 8, false);
+        ApplyCardTextQuality(view.Note, active ? 9 : 8, false);
+    }
+
+    private void ApplyCardTextQuality(Text label, int size, bool bold)
+    {
+        if (label == null)
+        {
+            return;
+        }
+
+        label.fontSize = size;
+        label.resizeTextForBestFit = false;
+        label.fontStyle = bold ? FontStyle.Bold : FontStyle.Normal;
+        label.horizontalOverflow = HorizontalWrapMode.Wrap;
+        label.verticalOverflow = VerticalWrapMode.Truncate;
+        label.material = font.material;
+    }
+
+    private Vector2 HoverCardPosition(CardView view)
+    {
+        return view.HomePosition + new Vector2(-view.Root.sizeDelta.x * 0.25f, 58f);
+    }
+
     private void HandleCardDrag(Event current)
     {
         if (current == null || cards == null || table == null || handRoot == null)
@@ -2927,6 +3541,7 @@ public sealed class CardBattleGame : MonoBehaviour
     {
         draggingCard = view;
         isDraggingCard = true;
+        hoveredCard = null;
         RaiseHandLayer();
         view.Root.SetAsLastSibling();
         view.Root.localScale = Vector3.one;
@@ -2969,6 +3584,11 @@ public sealed class CardBattleGame : MonoBehaviour
 
         view.Root.anchoredPosition = view.HomePosition;
         view.Root.localScale = Vector3.one;
+        view.Root.localEulerAngles = Vector3.zero;
+        if (hoveredCard == view)
+        {
+            hoveredCard = null;
+        }
     }
 
     private Rect HiddenPlayZone()
@@ -2979,7 +3599,8 @@ public sealed class CardBattleGame : MonoBehaviour
     private Rect CardScreenRect(CardView view)
     {
         var handTopLeft = HandTopLeftInTable();
-        return TableRect(handTopLeft.x + view.Root.anchoredPosition.x, handTopLeft.y - view.Root.anchoredPosition.y, view.Root.sizeDelta.x, view.Root.sizeDelta.y);
+        var scale = Mathf.Max(Mathf.Abs(view.Root.localScale.x), Mathf.Abs(view.Root.localScale.y));
+        return TableRect(handTopLeft.x + view.Root.anchoredPosition.x, handTopLeft.y - view.Root.anchoredPosition.y, view.Root.sizeDelta.x * scale, view.Root.sizeDelta.y * scale);
     }
 
     private Vector2 HandTopLeftInTable()
@@ -3010,6 +3631,7 @@ public sealed class CardBattleGame : MonoBehaviour
             return;
         }
 
+        UpdateCardHover(Event.current);
         HandleCardDrag(Event.current);
 
         if (gameOver)
@@ -3021,7 +3643,12 @@ public sealed class CardBattleGame : MonoBehaviour
             return;
         }
 
-        if (InvisibleButton(TableRect(1118, 374, 102, 44), playerTurn && !gameOver))
+        if (InvisibleButton(TableRect(996, 476, 58, 196), playerTurn && !gameOver && !inputLocked))
+        {
+            ToggleBambooScroll();
+        }
+
+        if (InvisibleButton(TableRect(1110, 344, 112, 54), playerTurn && !gameOver && !inputLocked))
         {
             EndTurn();
         }
@@ -3136,13 +3763,17 @@ public sealed class CardBattleGame : MonoBehaviour
 
     private sealed class CardView
     {
-        public CardView(CardData card, Button button, Text note, RectTransform root, Vector2 homePosition)
+        public CardView(CardData card, Button button, Text note, RectTransform root, Vector2 homePosition, Text titleText, Text costText, Text typeText, Text bodyText)
         {
             Card = card;
             Button = button;
             Note = note;
             Root = root;
             HomePosition = homePosition;
+            TitleText = titleText;
+            CostText = costText;
+            TypeText = typeText;
+            BodyText = bodyText;
         }
 
         public CardData Card { get; }
@@ -3150,20 +3781,32 @@ public sealed class CardBattleGame : MonoBehaviour
         public Text Note { get; }
         public RectTransform Root { get; }
         public Vector2 HomePosition { get; }
+        public Text TitleText { get; }
+        public Text CostText { get; }
+        public Text TypeText { get; }
+        public Text BodyText { get; }
     }
 
     private sealed class BuiltCard
     {
-        public BuiltCard(Button button, Text note, RectTransform root)
+        public BuiltCard(Button button, Text note, RectTransform root, Text title, Text cost, Text type, Text body)
         {
             Button = button;
             Note = note;
             Root = root;
+            Title = title;
+            Cost = cost;
+            Type = type;
+            Body = body;
         }
 
         public Button Button { get; }
         public Text Note { get; }
         public RectTransform Root { get; }
+        public Text Title { get; }
+        public Text Cost { get; }
+        public Text Type { get; }
+        public Text Body { get; }
     }
 
 
